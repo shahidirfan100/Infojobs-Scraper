@@ -85,25 +85,7 @@ async function main() {
                     },
                 },
                 preNavigationHooks: [
-                    async ({ page }) => {
-                        // Enhanced stealth: Remove webdriver flag and navigator properties
-                        await page.evaluateOnNewDocument(() => {
-                            Object.defineProperty(navigator, 'webdriver', {
-                                get: () => undefined,
-                            });
-                            
-                            // Mock chrome runtime
-                            window.chrome = { runtime: {} };
-                            
-                            // Mock permissions
-                            const originalQuery = window.navigator.permissions.query;
-                            window.navigator.permissions.query = (parameters) => (
-                                parameters.name === 'notifications' ?
-                                    Promise.resolve({ state: Notification.permission }) :
-                                    originalQuery(parameters)
-                            );
-                        });
-                        
+                    async ({ page, session }) => {
                         // Set realistic headers
                         await page.setExtraHTTPHeaders({
                             'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -119,6 +101,24 @@ async function main() {
                         
                         // Set realistic viewport
                         await page.setViewport({ width: 1920, height: 1080 });
+                        
+                        // Enhanced stealth: Add init script to remove webdriver
+                        await page.addInitScript(() => {
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined,
+                            });
+                            
+                            // Mock chrome runtime
+                            window.chrome = { runtime: {} };
+                            
+                            // Mock permissions
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({ state: Notification.permission }) :
+                                    originalQuery(parameters)
+                            );
+                        });
                     },
                 ],
                 async requestHandler({ page, request }) {
