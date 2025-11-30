@@ -138,12 +138,6 @@ await Actor.main(async () => {
             await page.waitForTimeout(400 + Math.random() * 400);
             await safeScroll(page, crawlerLog);
 
-            const html = await page.content();
-            const bodyText = (await page.textContent('body').catch(() => '')) || '';
-
-            // We DO NOT treat this as blocked anymore – we still try to extract links.
-            // Only detail pages will use strict block detection.
-
             // Capture cookies & UA once (for Cheerio detail phase)
             if (!sessionCookies.length) {
                 try {
@@ -169,14 +163,14 @@ await Actor.main(async () => {
                 }
             }
 
-            // Wait for job cards
+            // Wait for *some* job container (best-effort)
             await page
-                .waitForSelector('a[href*="/of-i"], [data-test="offer-card"]', {
+                .waitForSelector('a[href*="/of-"], [data-href*="/of-"], article, [data-test*="offer"]', {
                     timeout: 15000,
                 })
                 .catch(() => {});
 
-            const jobLinks = await extractJobLinksFromPage(page, request.url);
+            const jobLinks = await extractJobLinksFromPage(page, request.url, crawlerLog);
             crawlerLog.info(
                 `[LIST] Page ${currentPage} => found ${jobLinks.length} job links.`,
             );
@@ -366,12 +360,10 @@ await Actor.main(async () => {
         // Some common patterns from the site:
         // /ofertas-trabajo/ingeniero
         // /ofertas-trabajo/madrid/ingeniero
-        // If only keyword, use /ofertas-trabajo/<keyword>
         if (kwSlug && !locSlug) {
             return `${base}/${kwSlug}`;
         }
 
-        // If location + keyword, use /ofertas-trabajo/<location>/<keyword>
         if (kwSlug && locSlug) {
             return `${base}/${locSlug}/${kwSlug}`;
         }
@@ -438,20 +430,67 @@ await Actor.main(async () => {
         }
     }
 
-    async function extractJobLinksFromPage(page, baseUrl) {
-        const hrefs = await page.$$eval('a[href*="/of-i"]', (els) =>
-            els
-                .map((a) => a.getAttribute('href') || '')
-                .filter((href) => href && /\/of-i[a-z0-9]/i.test(href)),
+    // 🔥 NEW: Much more robust link extraction on list pages
+    async function extractJobLinksFromPage(page, baseUrl, logger) {
+        const jobLinkPattern = /\/of-[a-z0-9]{5,}/i;
+
+        const urls = await page.$$eval(
+            'a, [data-href]',
+            (els, patternStr) => {
+                const pattern = new RegExp(patternStr, 'i');
+                const out = new Set();
+
+                for (const el of els) {
+                    // Prefer href, fall back to data-href
+                    let href =
+                        (el.getAttribute && el.getAttribute('href')) ||
+                        (el.getAttribute && el.getAttribute('data-href')) ||
+                        '';
+
+                    if (!href) continue;
+
+                    // Ignore mailto/tel/javascript
+                    if (/^(mailto:|tel:|javascript:)/i.test(href)) continue;
+
+                    if (pattern.test(href)) {
+                        out.add(href);
+                    }
+                }
+
+                return Array.from(out);
+            },
+            jobLinkPattern.source,
         );
-        const uniq = Array.from(new Set(hrefs));
-        return uniq
+
+        let absUrls = urls
             .map((href) => toAbs(href, baseUrl))
             .filter((u) => typeof u === 'string');
+
+        absUrls = Array.from(new Set(absUrls)); // dedupe
+
+        if (!absUrls.length && logger) {
+            // Debug: log first few anchors so we can inspect the DOM structure in logs
+            const debugAnchors = await page.$$eval('a', (els) =>
+                els.slice(0, 20).map((a) => ({
+                    href: a.getAttribute('href'),
+                    class: a.className,
+                    txt: (a.textContent || '').trim().slice(0, 80),
+                })),
+            );
+            logger.info(
+                `[LIST DEBUG] No job links matched. First anchors: ${JSON.stringify(
+                    debugAnchors,
+                    null,
+                    2,
+                )}`,
+            );
+        }
+
+        return absUrls;
     }
 
     async function findNextPageUrlPlaywright(page, currentUrl) {
-        // The SEO pages also use pagination; grab link to "Siguiente" if available
+        // Try pagination link with "Siguiente"
         const nextHref = await page
             .$eval(
                 'a[aria-label*="iguiente"], a:has-text("Siguiente"), a:has-text("Siguiente >")',
@@ -464,7 +503,7 @@ await Actor.main(async () => {
             if (abs) return abs;
         }
 
-        // Fallback: try to append ?pg=2 etc. if list.xhtml-style not found
+        // Fallback: try ?page=2 style
         try {
             const u = new URL(currentUrl);
             const currentPage = parseInt(u.searchParams.get('page') || '1', 10);
