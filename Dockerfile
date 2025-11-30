@@ -1,4 +1,4 @@
-FROM apify/actor-node-puppeteer-chrome:22
+FROM apify/actor-node-playwright-chrome:22
 
 COPY --chown=myuser package*.json ./
 

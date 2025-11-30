@@ -1,7 +1,8 @@
-// InfoJobs Scraper - Production-ready fast crawler
+// InfoJobs Scraper - Hybrid approach (Playwright for handshake + Cheerio for speed)
 import { Actor, log } from 'apify';
-import { PuppeteerCrawler, Dataset } from 'crawlee';
+import { PlaywrightCrawler, CheerioCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
+import { gotScraping } from 'got-scraping';
 
 await Actor.init();
 
@@ -58,6 +59,99 @@ async function main() {
 
         let saved = 0;
         const seenUrls = new Set();
+        let sessionCookies = null;
+        let userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+        // Function to get cookies using Playwright (one-time handshake)
+        async function acquireSessionCookies() {
+            log.info('Starting Playwright handshake to acquire cookies...');
+            
+            const handshakeCrawler = new PlaywrightCrawler({
+                proxyConfiguration: proxyConf,
+                maxRequestRetries: 3,
+                maxConcurrency: 1,
+                launchContext: {
+                    launchOptions: {
+                        headless: true,
+                        args: [
+                            '--no-sandbox',
+                            '--disable-setuid-sandbox',
+                            '--disable-dev-shm-usage',
+                            '--disable-blink-features=AutomationControlled',
+                            '--disable-features=IsolateOrigins,site-per-process',
+                            '--lang=es-ES',
+                            '--window-size=1920,1080',
+                        ],
+                    },
+                },
+                preNavigationHooks: [
+                    async ({ page }) => {
+                        // Enhanced stealth: Remove webdriver flag and navigator properties
+                        await page.evaluateOnNewDocument(() => {
+                            Object.defineProperty(navigator, 'webdriver', {
+                                get: () => undefined,
+                            });
+                            
+                            // Mock chrome runtime
+                            window.chrome = { runtime: {} };
+                            
+                            // Mock permissions
+                            const originalQuery = window.navigator.permissions.query;
+                            window.navigator.permissions.query = (parameters) => (
+                                parameters.name === 'notifications' ?
+                                    Promise.resolve({ state: Notification.permission }) :
+                                    originalQuery(parameters)
+                            );
+                        });
+                        
+                        // Set realistic headers
+                        await page.setExtraHTTPHeaders({
+                            'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                            'Accept-Encoding': 'gzip, deflate, br',
+                            'DNT': '1',
+                            'Sec-Fetch-Dest': 'document',
+                            'Sec-Fetch-Mode': 'navigate',
+                            'Sec-Fetch-Site': 'none',
+                            'Sec-Fetch-User': '?1',
+                            'Upgrade-Insecure-Requests': '1',
+                        });
+                        
+                        // Set realistic viewport
+                        await page.setViewport({ width: 1920, height: 1080 });
+                    },
+                ],
+                async requestHandler({ page, request }) {
+                    log.info(`Playwright handshake: Loading ${request.url}`);
+                    
+                    // Wait for page to load completely
+                    await page.waitForSelector('body', { timeout: 30000 });
+                    
+                    // Simulate human behavior with random delays
+                    await sleep(1500 + Math.random() * 1500);
+                    
+                    // Optional: Scroll a bit to trigger lazy loading
+                    await page.evaluate(() => window.scrollTo(0, 500));
+                    await sleep(500);
+                    
+                    // Get cookies from browser
+                    const cookies = await page.context().cookies();
+                    sessionCookies = cookies;
+                    
+                    // Get user agent
+                    userAgent = await page.evaluate(() => navigator.userAgent);
+                    
+                    log.info(`✓ Acquired ${cookies.length} cookies from InfoJobs`);
+                    log.info(`✓ User-Agent: ${userAgent}`);
+                },
+            });
+            
+            // Run handshake on the first URL only
+            const handshakeUrl = initial[0];
+            await handshakeCrawler.run([handshakeUrl]);
+            
+            return sessionCookies;
+        }
 
         // Enhanced detail extraction
         function extractJobDetails($, url) {
@@ -223,75 +317,71 @@ async function main() {
             }
         }
 
-        const crawler = new PuppeteerCrawler({
+        // Acquire cookies using Playwright handshake (one-time only)
+        await acquireSessionCookies();
+        
+        if (!sessionCookies || sessionCookies.length === 0) {
+            throw new Error('Failed to acquire session cookies from Playwright handshake');
+        }
+        
+        log.info('Cookie handshake complete. Switching to fast CheerioCrawler with got-scraping...');
+        
+        // Build cookie string for got-scraping
+        const cookieString = sessionCookies.map(c => `${c.name}=${c.value}`).join('; ');
+        
+        // Use fast CheerioCrawler with acquired cookies
+        const crawler = new CheerioCrawler({
             proxyConfiguration: proxyConf,
             maxRequestRetries: 5,
-            useSessionPool: true,
-            sessionPoolOptions: {
-                sessionOptions: {
-                    maxUsageCount: 15,
-                },
-                persistStateKeyValueStoreId: 'infojobs-sessions',
-            },
-            maxConcurrency: 3,
-            minConcurrency: 1,
-            requestHandlerTimeoutSecs: 120,
+            useSessionPool: false, // We manage cookies manually
+            maxConcurrency: 10,
+            minConcurrency: 4,
+            requestHandlerTimeoutSecs: 60,
             maxRequestsPerCrawl: MAX_PAGES * 30 + 100,
             
-            // Browser launch options for stealth
-            launchContext: {
-                launchOptions: {
-                    headless: true,
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-accelerated-2d-canvas',
-                        '--no-first-run',
-                        '--no-zygote',
-                        '--disable-gpu',
-                        '--lang=es-ES',
-                    ],
-                },
-            },
-            
-            // Pre-navigation hooks for stealth
+            // Use got-scraping with cookies from Playwright
             preNavigationHooks: [
-                async ({ page, request }) => {
-                    // Set extra headers
-                    await page.setExtraHTTPHeaders({
-                        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    });
+                async ({ request }) => {
+                    // Random delay between requests for stealth (100-500ms)
+                    await sleep(100 + Math.random() * 400);
                     
-                    // Set user agent
-                    await page.setUserAgent(
-                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    );
-                    
-                    // Set viewport
-                    await page.setViewport({ width: 1920, height: 1080 });
+                    // Add cookies and realistic headers to every request
+                    request.headers = {
+                        ...request.headers,
+                        'Cookie': cookieString,
+                        'User-Agent': userAgent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Connection': 'keep-alive',
+                        'DNT': '1',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'same-origin',
+                        'Sec-Fetch-User': '?1',
+                        'Cache-Control': 'max-age=0',
+                        'Referer': 'https://www.infojobs.net/',
+                    };
                 },
             ],
 
-            async requestHandler({ request, page, enqueueLinks, log: crawlerLog }) {
-                // Wait for page to load
-                await page.waitForSelector('body', { timeout: 30000 });
-                
-                // Get page content and parse with Cheerio
-                const content = await page.content();
-                const $ = cheerioLoad(content);
+            async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
                 const label = request.userData?.label || 'LIST';
                 const pageNo = request.userData?.pageNo || 1;
                 
-                // Check for bot detection
-                if (content.includes('We can\'t identify your browser') || content.includes('JavaScript is enabled')) {
-                    crawlerLog.warning(`Bot detection page detected at ${request.url}`);
-                    throw new Error('Bot detection - request will be retried');
+                // Check if we got blocked (bot detection page)
+                const bodyText = $.text();
+                if (bodyText.includes('We can\'t identify your browser') || bodyText.includes('JavaScript is enabled')) {
+                    crawlerLog.warning(`⚠️ Bot detection page detected at ${request.url}`);
+                    // Re-acquire cookies if blocked
+                    log.info('🔄 Re-acquiring cookies due to bot detection...');
+                    await acquireSessionCookies();
+                    const newCookieString = sessionCookies.map(c => `${c.name}=${c.value}`).join('; ');
+                    // Update cookie string for subsequent requests
+                    request.headers['Cookie'] = newCookieString;
+                    throw new Error('Bot detection - cookies refreshed, retrying');
                 }
-
-                // Random delay for stealth
-                await sleep(Math.random() * 2000 + 1000);
 
                 if (label === 'LIST') {
                     crawlerLog.info(`Processing LIST page ${pageNo}: ${request.url}`);

@@ -1,15 +1,30 @@
 {
   "name": "infojobs-scraper",
   "version": "1.0.0",
-  "description": "Efficient InfoJobs.net scraper.",
+  "description": "Efficient InfoJobs.net scraper using hybrid approach (Playwright handshake + fast Cheerio scraping).",
   "type": "module",
-  "scripts": {
-    "start": "node src/main.js"
-  },
   "dependencies": {
-    "apify": "^3.4.5",
-    "crawlee": "^3.14.1",
-    "cheerio": "^1.0.0-rc.12",
-    "puppeteer": "^22.0.0"
-  }
+        "apify": "^3.4.5",
+        "crawlee": "^3.14.1",
+        "playwright": "^1.54.1",
+        "cheerio": "^1.0.0-rc.12",
+        "got-scraping": "^4.1.2"
+    },
+    "devDependencies": {
+        "@apify/eslint-config": "^1.0.0",
+        "eslint": "^9.29.0",
+        "eslint-config-prettier": "^10.1.5",
+        "prettier": "^3.5.3"
+    },
+    "scripts": {
+        "start": "node src/main.js",
+        "format": "prettier --write .",
+        "format:check": "prettier --check .",
+        "lint": "eslint",
+        "lint:fix": "eslint --fix",
+        "test": "echo \"Error: oops, the Actor has no tests yet, sad!\" && exit 1",
+        "postinstall": "npx crawlee install-playwright-browsers"
+    },
+    "author": "It's not you it's me",
+    "license": "ISC"
 }
