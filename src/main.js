@@ -1,11 +1,12 @@
 // InfoJobs Scraper - Hybrid approach (Playwright for handshake + Cheerio for speed)
 
 import { Actor, log } from 'apify';
-import { CheerioCrawler } from 'crawlee';
-import { PlaywrightCrawler } from 'crawlee/playwright';
+import { CheerioCrawler, PlaywrightCrawler } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 
-const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+const DEFAULT_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 await Actor.main(async () => {
@@ -59,7 +60,9 @@ await Actor.main(async () => {
         }
 
         if (handshakeAttempts >= MAX_HANDSHAKE_ATTEMPTS) {
-            log.warning(`[HANDSHAKE] Max attempts (${MAX_HANDSHAKE_ATTEMPTS}) reached, skipping.`);
+            log.warning(
+                `[HANDSHAKE] Max attempts (${MAX_HANDSHAKE_ATTEMPTS}) reached, skipping handshake.`,
+            );
             return;
         }
 
@@ -90,7 +93,6 @@ await Actor.main(async () => {
             },
             preNavigationHooks: [
                 async ({ page }) => {
-                    // Extra headers
                     await page.setExtraHTTPHeaders({
                         'accept-language': 'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
                         accept:
@@ -98,7 +100,7 @@ await Actor.main(async () => {
                         'upgrade-insecure-requests': '1',
                     });
 
-                    // Stealth-ish tweaks (Playwright-safe: use addInitScript)
+                    // Stealth-ish tweaks (Playwright-safe: addInitScript)
                     await page.addInitScript(() => {
                         Object.defineProperty(navigator, 'webdriver', {
                             get: () => undefined,
@@ -194,7 +196,7 @@ await Actor.main(async () => {
         return (
             lower.includes("we can't identify your browser") ||
             lower.includes('javascript is enabled') ||
-            lower.includes('hemos detectado un uso inusual') ||
+            lower.includes('hemos detectado un uso inusual') || // InfoJobs Spanish text
             ((html || '').length < 2500 &&
                 lower.includes('javascript') &&
                 lower.includes('browser'))
@@ -442,7 +444,7 @@ await Actor.main(async () => {
             async ({ request, log: crawlerLog }) => {
                 request.headers ??= {};
                 Object.assign(request.headers, buildHeaders(userAgent, sessionCookies));
-                // Small jitter for stealth
+                // Tiny jitter for stealth
                 await sleep(100 + Math.random() * 400);
                 crawlerLog.debug(`[PRENAV] ${request.url}`);
             },
