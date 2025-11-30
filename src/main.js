@@ -1,4 +1,4 @@
-// InfoJobs Scraper - Hybrid (Playwright for list pages, Cheerio + HTTP for detail pages)
+// InfoJobs Scraper - Hybrid (Playwright for SEO list pages, Cheerio + HTTP for detail pages)
 
 import { Actor, log } from 'apify';
 import { PlaywrightCrawler, CheerioCrawler } from 'crawlee';
@@ -15,8 +15,8 @@ await Actor.main(async () => {
         keyword = '',
         location = '',
         category = '',
-        results_wanted: RESULTS_WANTED_RAW = 100,
-        max_pages: MAX_PAGES_RAW = 20,
+        results_wanted: RESULTS_WANTED_RAW = 20,
+        max_pages: MAX_PAGES_RAW = 5,
         startUrl,
         startUrls,
         url,
@@ -29,21 +29,22 @@ await Actor.main(async () => {
 
     const PLAYWRIGHT_MAX_CONCURRENCY = Math.min(
         Math.max(1, Number(MAX_CONCURRENCY_INPUT) || 2),
-        3, // play it safe with Playwright
+        3, // safe upper bound for Playwright
     );
 
     log.info(
         `Starting InfoJobs hybrid scraper - Target: ${RESULTS_WANTED} jobs, Max pages: ${MAX_PAGES}, Playwright concurrency: ${PLAYWRIGHT_MAX_CONCURRENCY}`,
     );
 
-    // --------- INITIAL URLS (LIST PAGES) ---------
+    // --------- INITIAL URLS (SEO LIST PAGES) ---------
 
     const initialUrls = [];
     if (Array.isArray(startUrls) && startUrls.length) initialUrls.push(...startUrls.map(String));
     if (startUrl) initialUrls.push(String(startUrl));
     if (url) initialUrls.push(String(url));
+
     if (!initialUrls.length) {
-        initialUrls.push(buildSearchUrl(keyword, location, category));
+        initialUrls.push(buildSeoSearchUrl(keyword, location, category));
     }
 
     log.info(`Initial URLs: ${JSON.stringify(initialUrls, null, 2)}`);
@@ -62,7 +63,7 @@ await Actor.main(async () => {
     let userAgent = DEFAULT_UA;
 
     // ======================
-    // 1) PLAYWRIGHT: LIST PAGES ONLY
+    // 1) PLAYWRIGHT: SEO LIST PAGES ONLY
     // ======================
 
     const listCrawler = new PlaywrightCrawler({
@@ -140,10 +141,8 @@ await Actor.main(async () => {
             const html = await page.content();
             const bodyText = (await page.textContent('body').catch(() => '')) || '';
 
-            if (isBlocked(html, bodyText)) {
-                crawlerLog.warning(`[LIST][BLOCK] Blocked / bot-check list page: ${request.url}`);
-                return;
-            }
+            // We DO NOT treat this as blocked anymore – we still try to extract links.
+            // Only detail pages will use strict block detection.
 
             // Capture cookies & UA once (for Cheerio detail phase)
             if (!sessionCookies.length) {
@@ -293,7 +292,7 @@ await Actor.main(async () => {
             const html = $.html() || '';
             const text = $('body').text() || '';
 
-            if (isBlocked(html, text)) {
+            if (isBlockedDetail(html, text)) {
                 crawlerLog.warning(
                     `[DETAIL][BLOCK] Block / bot-check detected on: ${request.url}`,
                 );
@@ -345,24 +344,55 @@ await Actor.main(async () => {
     // HELPER FUNCTIONS
     // ======================
 
-    function buildSearchUrl(keyword, location, category) {
-        const urlObj = new URL(
-            'https://www.infojobs.net/jobsearch/search-results/list.xhtml',
-        );
-        if (keyword) urlObj.searchParams.set('keyword', String(keyword));
-        if (location) urlObj.searchParams.set('provincia', String(location));
-        if (category) urlObj.searchParams.set('category', String(category));
-        urlObj.searchParams.set('sortBy', 'PUBLICATION_DATE');
-        urlObj.searchParams.set('page', '1');
-        return urlObj.href;
+    // Build SEO-friendly list URL rather than the protected /jobsearch/search-results/list.xhtml
+    function buildSeoSearchUrl(keyword, location, category) {
+        const base = 'https://www.infojobs.net/ofertas-trabajo';
+
+        const kw = (keyword || '').trim();
+        const loc = (location || '').trim();
+
+        // Simple slugifier for keyword/location segments
+        const slugify = (str) =>
+            str
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '')
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || '';
+
+        const kwSlug = kw ? slugify(kw) : '';
+        const locSlug = loc ? slugify(loc) : '';
+
+        // Some common patterns from the site:
+        // /ofertas-trabajo/ingeniero
+        // /ofertas-trabajo/madrid/ingeniero
+        // If only keyword, use /ofertas-trabajo/<keyword>
+        if (kwSlug && !locSlug) {
+            return `${base}/${kwSlug}`;
+        }
+
+        // If location + keyword, use /ofertas-trabajo/<location>/<keyword>
+        if (kwSlug && locSlug) {
+            return `${base}/${locSlug}/${kwSlug}`;
+        }
+
+        // Fallback: generic offers page
+        return `${base}`;
     }
 
-    function isBlocked(html, text) {
-        const lower = (text || '').toLowerCase();
+    function hasHumanRobotText(lower) {
         return (
             lower.includes('¿eres humano o un robot?') ||
             lower.includes('eres humano o un robot') ||
-            lower.includes('are you human or a robot') ||
+            lower.includes('are you human or a robot')
+        );
+    }
+
+    // STRICT detection for DETAIL pages only
+    function isBlockedDetail(html, text) {
+        const lower = (text || '').toLowerCase();
+        return (
+            hasHumanRobotText(lower) ||
             lower.includes("we can't identify your browser") ||
             lower.includes('javascript is enabled') ||
             lower.includes('hemos detectado un uso inusual') ||
@@ -421,9 +451,10 @@ await Actor.main(async () => {
     }
 
     async function findNextPageUrlPlaywright(page, currentUrl) {
+        // The SEO pages also use pagination; grab link to "Siguiente" if available
         const nextHref = await page
             .$eval(
-                'a[aria-label*="iguiente"], a:has-text("Siguiente")',
+                'a[aria-label*="iguiente"], a:has-text("Siguiente"), a:has-text("Siguiente >")',
                 (a) => a.getAttribute('href') || '',
             )
             .catch(() => null);
@@ -433,6 +464,7 @@ await Actor.main(async () => {
             if (abs) return abs;
         }
 
+        // Fallback: try to append ?pg=2 etc. if list.xhtml-style not found
         try {
             const u = new URL(currentUrl);
             const currentPage = parseInt(u.searchParams.get('page') || '1', 10);
