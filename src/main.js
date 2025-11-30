@@ -1,8 +1,7 @@
 // InfoJobs Scraper - Production-ready fast crawler
 import { Actor, log } from 'apify';
-import { CheerioCrawler, Dataset } from 'crawlee';
+import { PuppeteerCrawler, Dataset } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
-import { HeaderGenerator } from 'header-generator';
 
 await Actor.init();
 
@@ -59,7 +58,6 @@ async function main() {
 
         let saved = 0;
         const seenUrls = new Set();
-        const headerGenerator = new HeaderGenerator();
 
         // Enhanced detail extraction
         function extractJobDetails($, url) {
@@ -225,43 +223,72 @@ async function main() {
             }
         }
 
-        const crawler = new CheerioCrawler({
+        const crawler = new PuppeteerCrawler({
             proxyConfiguration: proxyConf,
             maxRequestRetries: 5,
             useSessionPool: true,
             sessionPoolOptions: {
                 sessionOptions: {
-                    maxUsageCount: 10,
+                    maxUsageCount: 15,
                 },
                 persistStateKeyValueStoreId: 'infojobs-sessions',
             },
-            maxConcurrency: 5,
-            minConcurrency: 2,
-            requestHandlerTimeoutSecs: 90,
+            maxConcurrency: 3,
+            minConcurrency: 1,
+            requestHandlerTimeoutSecs: 120,
             maxRequestsPerCrawl: MAX_PAGES * 30 + 100,
             
-            // Stealth: custom headers
+            // Browser launch options for stealth
+            launchContext: {
+                launchOptions: {
+                    headless: true,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-accelerated-2d-canvas',
+                        '--no-first-run',
+                        '--no-zygote',
+                        '--disable-gpu',
+                        '--lang=es-ES',
+                    ],
+                },
+            },
+            
+            // Pre-navigation hooks for stealth
             preNavigationHooks: [
-                async ({ request, page, crawler }) => {
-                    const headers = headerGenerator.getHeaders({
-                        operatingSystems: ['windows', 'macos'],
-                        browsers: ['chrome', 'firefox'],
-                        devices: ['desktop'],
-                        locales: ['es-ES', 'en-US'],
-                    });
-                    
-                    request.headers = {
-                        ...headers,
+                async ({ page, request }) => {
+                    // Set extra headers
+                    await page.setExtraHTTPHeaders({
                         'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                        'Referer': 'https://www.infojobs.net/',
-                    };
+                    });
+                    
+                    // Set user agent
+                    await page.setUserAgent(
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    );
+                    
+                    // Set viewport
+                    await page.setViewport({ width: 1920, height: 1080 });
                 },
             ],
 
-            async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
+            async requestHandler({ request, page, enqueueLinks, log: crawlerLog }) {
+                // Wait for page to load
+                await page.waitForSelector('body', { timeout: 30000 });
+                
+                // Get page content and parse with Cheerio
+                const content = await page.content();
+                const $ = cheerioLoad(content);
                 const label = request.userData?.label || 'LIST';
                 const pageNo = request.userData?.pageNo || 1;
+                
+                // Check for bot detection
+                if (content.includes('We can\'t identify your browser') || content.includes('JavaScript is enabled')) {
+                    crawlerLog.warning(`Bot detection page detected at ${request.url}`);
+                    throw new Error('Bot detection - request will be retried');
+                }
 
                 // Random delay for stealth
                 await sleep(Math.random() * 2000 + 1000);
