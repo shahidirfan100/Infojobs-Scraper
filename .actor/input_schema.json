@@ -4,12 +4,6 @@
   "type": "object",
   "schemaVersion": 1,
   "properties": {
-    "startUrl": {
-      "title": "Start URL",
-      "type": "string",
-      "description": "InfoJobs search URL to start from. If provided, overrides keyword/location.",
-      "editor": "textfield"
-    },
     "startUrls": {
       "title": "Start URLs",
       "type": "array",

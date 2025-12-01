@@ -1,6 +1,6 @@
 // InfoJobs Scraper - JSON API first, HTML fallback (HTTP only)
 import { Actor, log } from 'apify';
-import { CheerioCrawler } from 'crawlee';
+import { CheerioCrawler, PlaywrightCrawler } from 'crawlee';
 import { gotScraping } from 'got-scraping';
 import { load as cheerioLoad } from 'cheerio';
 
@@ -59,6 +59,12 @@ await Actor.main(async () => {
     }
 
     if (state.saved < cfg.maxItems) {
+        // Try Playwright list extraction to bypass block pages, then fetch details via HTTP.
+        await runPlaywrightListAndDetails(cfg, state, proxyConfiguration);
+    }
+
+    if (state.saved < cfg.maxItems) {
+        // As a final fallback, still attempt pure HTML HTTP if Playwright gathered no URLs.
         await runHtmlHarvest(cfg, state, proxyConfiguration);
     }
 
@@ -519,4 +525,158 @@ function normalizeInput(input) {
         htmlListConcurrency: 2,
         htmlDetailConcurrency: 5,
     };
+}
+async function runPlaywrightListAndDetails(cfg, state, proxyConfiguration) {
+    const startUrls = buildStartUrls(cfg);
+    if (!startUrls.length) {
+        log.warning('No start URLs built for Playwright phase.');
+        return;
+    }
+
+    const detailUrls = new Set();
+    let sessionCookies = [];
+    let userAgent = DEFAULT_HEADERS['user-agent'];
+
+    const listCrawler = new PlaywrightCrawler({
+        proxyConfiguration,
+        maxConcurrency: 2,
+        minConcurrency: 1,
+        maxRequestRetries: 1,
+        requestHandlerTimeoutSecs: 35,
+        navigationTimeoutSecs: 25,
+        maxRequestsPerCrawl: cfg.maxPages * 3 + 5,
+        launchContext: {
+            launchOptions: {
+                headless: true,
+                args: [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-blink-features=AutomationControlled',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--lang=es-ES',
+                    '--window-size=1920,1080',
+                ],
+            },
+        },
+        async requestHandler({ page, request, crawler, log: crawlerLog }) {
+            const currentPage = request.userData.page || 1;
+
+            await page.setExtraHTTPHeaders(DEFAULT_HEADERS);
+            await page.addInitScript(() => {
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                // @ts-ignore
+                window.chrome = { runtime: {} };
+                Object.defineProperty(navigator, 'languages', { get: () => ['es-ES', 'es'] });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            });
+
+            await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: 25000 });
+            await page.waitForTimeout(500 + Math.random() * 500);
+
+            if (!sessionCookies.length) {
+                try {
+                    const cookies = await page.context().cookies();
+                    if (cookies?.length) sessionCookies = cookies;
+                } catch {}
+            }
+            if (userAgent === DEFAULT_HEADERS['user-agent']) {
+                try {
+                    const ua = await page.evaluate(() => navigator.userAgent);
+                    if (ua) userAgent = ua;
+                } catch {}
+            }
+
+            const jobLinks = await page.$$eval('a[href], [data-href]', (els) => {
+                const out = new Set();
+                for (const el of els) {
+                    const href = el.getAttribute('href') || el.getAttribute('data-href') || '';
+                    if (!href) continue;
+                    if (/^(mailto:|tel:|javascript:)/i.test(href)) continue;
+                    if (!/\/of-[a-z0-9]{4,}/i.test(href)) continue;
+                    out.add(href);
+                }
+                return Array.from(out);
+            });
+
+            const absLinks = jobLinks
+                .map((h) => toAbs(h, request.url))
+                .filter(Boolean)
+                .map((u) => u.split('?')[0]);
+
+            for (const u of absLinks) {
+                if (detailUrls.size >= cfg.maxItems * 3) break;
+                if (cfg.dedupe && state.seenUrls.has(u)) continue;
+                detailUrls.add(u);
+                if (cfg.dedupe) state.seenUrls.add(u);
+            }
+
+            if (detailUrls.size >= cfg.maxItems * 2 || currentPage >= cfg.maxPages) return;
+
+            const nextHref = await page
+                .$eval(
+                    'a[aria-label*="iguiente"], a:has-text("Siguiente"), a:has-text("Siguiente >")',
+                    (a) => a.getAttribute('href') || '',
+                )
+                .catch(() => null);
+
+            if (nextHref) {
+                const nextAbs = toAbs(nextHref, request.url);
+                if (nextAbs) {
+                    await crawler.addRequests([{ url: nextAbs, userData: { page: currentPage + 1 } }]);
+                }
+            }
+        },
+    });
+
+    await listCrawler.run(
+        startUrls.map((u) => ({
+            url: u,
+            userData: { page: 1 },
+        })),
+    );
+
+    if (!detailUrls.size) {
+        log.warning('Playwright phase found no detail URLs.');
+        return;
+    }
+
+    const detailList = Array.from(detailUrls).slice(0, cfg.maxItems * 3);
+    const detailCrawler = new CheerioCrawler({
+        proxyConfiguration,
+        maxConcurrency: cfg.htmlDetailConcurrency,
+        maxRequestRetries: 2,
+        requestHandlerTimeoutSecs: 25,
+        preNavigationHooks: [
+            async ({ request }) => {
+                request.headers ??= {};
+                Object.assign(request.headers, DEFAULT_HEADERS);
+                if (sessionCookies.length) {
+                    request.headers.cookie = sessionCookies.map((c) => `${c.name}=${c.value}`).join('; ');
+                }
+                request.headers['user-agent'] = userAgent;
+            },
+        ],
+        async requestHandler({ request, body, $, log: crawlerLog }) {
+            if (state.saved >= cfg.maxItems) return;
+            const html = body?.toString?.() || '';
+            if (isBlocked(html)) {
+                state.blocked += 1;
+                crawlerLog.warning(`[DETAIL][BLOCK] ${request.url}`);
+                return;
+            }
+            const $dom = $ || cheerioLoad(html);
+            const job = extractJobFromDetail($dom, request.url);
+            if (!job.title) return;
+            await Actor.pushData(job);
+            state.saved += 1;
+            crawlerLog.info(`[DETAIL] Saved job #${state.saved}: ${job.title}`);
+        },
+    });
+
+    await detailCrawler.run(
+        detailList.map((u) => ({
+            url: u,
+        })),
+    );
 }
