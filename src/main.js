@@ -445,16 +445,30 @@ function stripWhitespace(text) {
 
 function buildStartUrls(cfg) {
     const urls = [];
-    if (Array.isArray(cfg.startUrls)) {
-        for (const u of cfg.startUrls) {
-            if (u) urls.push(String(u));
+    const addIfValid = (raw) => {
+        if (!raw) return;
+        const u = typeof raw === 'string' ? raw : raw.url || raw.requests || raw.href;
+        if (!u) return;
+        try {
+            const abs = new URL(u, 'https://www.infojobs.net').href;
+            urls.push(abs);
+        } catch {
+            // ignore invalid
         }
+    };
+
+    if (Array.isArray(cfg.startUrls)) {
+        for (const u of cfg.startUrls) addIfValid(u);
     }
-    if (cfg.startUrl) urls.push(String(cfg.startUrl));
+    addIfValid(cfg.startUrl);
+
     if (!urls.length && (cfg.keyword || cfg.location)) {
         urls.push(buildSeoSearchUrl(cfg.keyword, cfg.location, cfg.category));
     }
-    return urls;
+    if (!urls.length) {
+        urls.push('https://www.infojobs.net/ofertas-trabajo');
+    }
+    return Array.from(new Set(urls));
 }
 
 function buildSeoSearchUrl(keyword, location, category) {
