@@ -54,7 +54,7 @@ Each scraped job includes:
   "title": "Job Title",
   "company": "Company Name",
   "location": "City, Province",
-  "salary": "€XX,XXX - €YY,YYY Bruto/año",
+  "salary": "?XX,XXX - ?YY,YYY Bruto/a�o",
   "job_type": "Contrato indefinido | Jornada completa",
   "date_posted": "Hace 2d",
   "description_html": "<p>Detailed job description...</p>",

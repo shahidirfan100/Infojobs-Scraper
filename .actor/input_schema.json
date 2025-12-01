@@ -1,39 +1,52 @@
 {
   "title": "InfoJobs Scraper",
-  "description": "Scrape job listings from InfoJobs.net. Provide keyword, location, or a specific InfoJobs search URL. The actor handles pagination and optional detail scraping for comprehensive job data.",
+  "description": "Scrape job listings from InfoJobs.net. Provide keyword/location or a specific search URL. The actor handles pagination and optional detail scraping.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Start scraping from a specific InfoJobs search URL. If provided, this overrides keyword/location.",
+      "description": "InfoJobs search URL to start from. If provided, overrides keyword/location.",
       "editor": "textfield"
     },
+    "startUrls": {
+      "title": "Start URLs",
+      "type": "array",
+      "description": "List of InfoJobs search URLs. If provided, overrides keyword/location.",
+      "editor": "requestListSources",
+      "prefill": []
+    },
     "keyword": {
-      "title": "Keyword (if not using Start URL)",
+      "title": "Keyword",
       "type": "string",
-      "description": "Job search keyword(s), e.g., 'Software Developer', 'Marketing Manager', 'Data Analyst'.",
+      "description": "Job search keyword(s), e.g., \"Software Developer\", \"Marketing Manager\".",
       "editor": "textfield",
       "prefill": "ingeniero"
     },
     "location": {
-      "title": "Location (if not using Start URL)",
+      "title": "Location (province IDs)",
       "type": "string",
-      "description": "Province IDs for location filtering (e.g., '28' for Madrid). Leave empty for all locations.",
+      "description": "Province ID(s) for filtering (e.g., \"28\" for Madrid). Leave empty for all locations.",
+      "editor": "textfield"
+    },
+    "category": {
+      "title": "Category (optional)",
+      "type": "string",
+      "description": "Category ID(s) for filtering (optional).",
       "editor": "textfield"
     },
     "collectDetails": {
       "title": "Collect job details",
       "type": "boolean",
-      "description": "If enabled, scraper opens job detail pages for full description.",
+      "description": "If enabled, fetches job detail pages/descriptions.",
       "editor": "checkbox",
       "default": true
     },
     "results_wanted": {
       "title": "Maximum number of jobs",
       "type": "integer",
-      "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
+      "description": "Maximum jobs to collect. Leave empty to collect all available within page cap.",
       "minimum": 1,
       "default": 100,
       "editor": "number"
@@ -41,10 +54,10 @@
     "max_pages": {
       "title": "Maximum number of pages",
       "type": "integer",
-      "description": "A safety cap on the number of search result pages to visit.",
+      "description": "Safety cap on paginated requests (applies to API and HTML).",
       "minimum": 1,
-      "editor": "number",
-      "default": 20
+      "default": 20,
+      "editor": "number"
     },
     "proxyConfiguration": {
       "title": "Proxy configuration",
@@ -59,11 +72,11 @@
     "dedupe": {
       "title": "Deduplicate results",
       "type": "boolean",
-      "description": "Remove duplicate job URLs from results (in-memory deduplication).",
+      "description": "Remove duplicate job URLs from results (in-memory).",
       "editor": "checkbox",
       "default": true
-  }
-},
+    }
+  },
   "required": [],
   "additionalProperties": false
 }
